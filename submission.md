@@ -120,3 +120,36 @@ To illustrate the interaction between routes, services, and models, consider the
   - Added regression test `test_streak_continues_through_full_weekend_into_monday` to `tests/test_streaks.py` to ensure a multi-day streak traversing Friday through Monday increments steadily from 1 to 4 without boundary interruptions.
   - All 6 tests in `tests/test_streaks.py` passed.
 
+### Issue #2 — Friends Listening Now shows people from yesterday
+
+- **1. How you reproduced it**:
+  Created a test suite in `tests/test_feed.py` (`test_listening_now_excludes_yesterday`). Seeded two friends: one whose last listen occurred late yesterday evening (23:00 UTC, within a 24-hour window from the current morning) and one whose last listen occurred earlier today. Invoking `get_friends_listening_now(user.id)` returned `['earlybird', 'nightowl']`, failing `assert 'nightowl' not in friend_names` with `AssertionError: assert 'nightowl' not in ['earlybird', 'nightowl']`.
+
+- **2. How you found the root cause**:
+  Inspected `services/feed_service.py` where `get_friends_listening_now()` computes the query cutoff filter (lines 13–35). Compared the implementation with the expected calendar day behavior described in the issue specification.
+
+- **3. The root cause**:
+  In `services/feed_service.py`, lines 13 and 32:
+  ```python
+  RECENT_THRESHOLD = timedelta(hours=24)
+  ...
+  cutoff = datetime.now(timezone.utc) - RECENT_THRESHOLD
+  ```
+  The filter computed `cutoff` as a rolling 24-hour interval (`now - timedelta(hours=24)`) instead of bounding it to the current calendar day. Friends who listened late yesterday evening were within 24 hours of the current morning, so their `listened_at >= cutoff` evaluated to `True`, causing them to erroneously appear in today's "Listening Now" feed.
+
+- **4. Your fix**:
+  In `services/feed_service.py`, updated `get_friends_listening_now(user_id: str, now: datetime | None = None)` to compute `cutoff` at the start of the current calendar day (midnight 00:00:00 UTC):
+  ```python
+  if now is None:
+      now = datetime.now(timezone.utc)
+  cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+  ```
+  This guarantees that only listening events occurring on the current calendar day are retrieved, while cleanly supporting deterministic time injection in tests.
+
+- **5. Your side-effect check**:
+  - Verified exact midnight boundary condition: events at 23:59:59 yesterday are excluded, while events at 00:00:00 today are included.
+  - Verified per-friend deduplication remains intact: when a friend listens to multiple tracks today, only their most recent track is returned.
+  - Verified `get_activity_feed()` remains unaffected and continues to return events spanning multiple days up to the requested limit.
+  - Verified graceful handling for users with no friends (`[]`) and non-existent users (`ValueError`).
+  - Added full test suite in `tests/test_feed.py` covering all scenarios (4 tests passing).
+

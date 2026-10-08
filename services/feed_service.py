@@ -13,13 +13,14 @@ from models import User, Song, ListeningEvent
 RECENT_THRESHOLD = timedelta(hours=24)
 
 
-def get_friends_listening_now(user_id: str) -> list[dict]:
+def get_friends_listening_now(user_id: str, now: datetime | None = None) -> list[dict]:
     """
-    Return a list of friends who have listened to something recently,
+    Return a list of friends who have listened to something today (calendar day),
     along with the song they were listening to.
 
     Args:
         user_id: The ID of the current user.
+        now: Optional current datetime (UTC) for determining the calendar day. Defaults to datetime.now(timezone.utc).
 
     Returns:
         A list of dicts, each with 'friend', 'song', and 'listened_at' keys,
@@ -29,7 +30,10 @@ def get_friends_listening_now(user_id: str) -> list[dict]:
     if not user:
         raise ValueError(f"User {user_id} not found")
 
-    cutoff = datetime.now(timezone.utc) - RECENT_THRESHOLD
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     friend_ids = [f.id for f in user.friends]
 
     if not friend_ids:
