@@ -1,0 +1,122 @@
+# Project 5: Mixtape Bug Hunt — Submission
+
+## AI Usage
+
+This project utilized AI assistance (Antigravity AI coding assistant) throughout the debugging, development, and documentation lifecycle in accordance with the project guidelines:
+
+1. **Codebase Navigation & Architecture Analysis**:
+   - Automated structural inspection of application entrypoints (`app.py`), relational models (`models.py`), presentation layers (`routes/`), and business logic (`services/`).
+   - Mapped relationships across database models (`User`, `Song`, `Tag`, `Playlist`, `Notification`, `ListeningEvent`, `Rating`) and traced request-response lifecycles.
+
+2. **Root Cause Analysis & Diagnosis**:
+   - Analyzed unit test failures in `pytest` to pinpoint exact lines of failure.
+   - Evaluated temporal boundary conditions in Python `datetime` (UTC conversions, weekday indexing, rolling windows vs. calendar day cutoffs).
+   - Inspected SQLAlchemy 2.0 query patterns, specifically Cartesian product anomalies produced by unconstrained joins across many-to-many relationship tables.
+   - Identified missing service layer interactions and off-by-one list slicing boundaries.
+
+3. **Test Construction & Regression Verification**:
+   - Formulated isolated unit and regression test cases within the pytest framework to reliably trigger reported defects, verify fixes, and protect against regressions.
+   - Verified that all edge cases (empty states, boundary conditions, self-actions) behave consistently.
+
+4. **Documentation & Version Control**:
+   - Structured comprehensive Root Cause Analyses covering reproduction, diagnosis, precise code citations, targeted modifications, and side-effect verifications.
+   - Maintained strict commit discipline following conventional commit specifications for each isolated fix.
+
+---
+
+## Codebase Map
+
+### Architecture Overview
+
+The Mixtape application is built as a modular Flask web application structured into distinct layers following separation of concerns:
+- **Application Factory & Database Initializer (`app.py`)**: Initializes Flask, configures SQLite via Flask-SQLAlchemy, and registers Blueprints with URL prefixes.
+- **Data Models (`models.py`)**: Declares SQLAlchemy ORM models and association tables representing domain entities.
+- **Route Handlers (`routes/`)**: Handles HTTP requests, parses parameters, performs input validation, delegates business logic to services, and serializes JSON responses.
+- **Service Layer (`services/`)**: Encapsulates core business logic, database queries, state mutations, and domain rules.
+
+```
+ai201-project5-mixtape-starter/
+├── app.py                      # Flask application factory & database setup
+├── models.py                   # SQLAlchemy models & association tables
+├── routes/
+│   ├── feed.py                 # Listening activity & feed endpoints
+│   ├── playlists.py            # Playlist management endpoints
+│   ├── songs.py                # Song details, ratings, & search endpoints
+│   └── users.py                # User profiles, streaks, & notifications endpoints
+├── services/
+│   ├── feed_service.py         # Activity feed & friend listening queries
+│   ├── notification_service.py # Event notification & rating workflows
+│   ├── playlist_service.py     # Playlist creation & song retrieval logic
+│   ├── search_service.py       # Song search & tag querying
+│   └── streak_service.py       # Consecutive day listening streak tracking
+└── tests/                      # Automated test suite
+```
+
+### Key Models and Relationships (`models.py`)
+
+1. **`User`**: Represents registered listeners. Tracks profile information (`username`, `email`), listening stats (`listening_streak`, `last_listened_at`), and timestamp metadata. Contains relationships to shared songs, ratings, listening events, notifications, playlists, and a self-referential many-to-many `friends` relationship via the `friendships` association table.
+2. **`Song`**: Represents shared tracks (`title`, `artist`, `album`, `genre`, `shared_by`, `share_note`). Connects to `Tag` entities via the `song_tags` association table and links to ratings and listening events.
+3. **`Playlist`**: Represents curated collections of songs (`name`, `created_by`, `is_collaborative`). Uses the `playlist_entries` association table which tracks song order via an explicit `position` column.
+4. **`Notification`**: Represents user notifications (`user_id`, `notification_type`, `body`, `read`, `created_at`) alerting users to social interactions.
+5. **`ListeningEvent`**: Represents discrete song playback occurrences (`user_id`, `song_id`, `listened_at`) used for feeds and streak tracking.
+6. **`Rating`**: Captures user ratings (1 to 5 stars) per song with a unique constraint on `(user_id, song_id)`.
+
+### Feature Data Flow Trace: Adding a Song to a Collaborative Playlist
+
+To illustrate the interaction between routes, services, and models, consider the flow when a user adds a song to an existing playlist:
+
+1. **HTTP Request**: The client sends `POST /playlists/<playlist_id>/songs` with a JSON payload containing `{"song_id": "<song-uuid>", "added_by": "<user-uuid>"}`.
+2. **Routing & Input Validation (`routes/playlists.py:add_song`)**:
+   - The route handler retrieves `playlist_id` from the URL parameters and parses `song_id` and `added_by` from `request.get_json()`.
+   - If required fields are missing, returns an HTTP 400 Bad Request error.
+   - Forwards execution to `services/notification_service.py:add_to_playlist`.
+3. **Domain Logic & Entity Lookup (`services/notification_service.py:add_to_playlist`)**:
+   - Validates entity existence by retrieving the `Song`, `User`, and `Playlist` records from `db.session`.
+   - Appends `song` to `playlist.songs` if not already present.
+   - Commits the transaction to persist the new playlist entry in `playlist_entries`.
+4. **Notification Trigger**:
+   - Compares the song's original sharer (`song.shared_by`) with the adder's ID (`added_by`).
+   - If a different user added the song, creates a new `Notification` entity (`notification_type="song_added_to_playlist"`) addressed to the song sharer with a message formatted with the actor and playlist details.
+   - Persists the notification via `create_notification()`.
+5. **Response Serialization**:
+   - The route handler catches any domain exceptions (`ValueError`), formatting them into appropriate HTTP status codes (HTTP 400 or 404).
+   - Upon successful execution, returns HTTP 201 Created with JSON payload `{"message": "Song added to playlist"}`.
+
+### Architectural Patterns
+
+- **Route-Service Separation**: Route functions only orchestrate HTTP parsing, validation, status code mapping, and response serialization. All data querying, relational manipulation, and business rules reside in `services/`.
+- **Stateless Database Transactions**: Services interact directly with `app.db.session`, executing scoped queries and committing state changes atomically.
+- **Normalized Relational Associations**: Cross-cutting relationships (`friendships`, `song_tags`, `playlist_entries`) use dedicated association tables, decoupling entity definitions and supporting auxiliary attributes (e.g., ordering `position` on playlist entries).
+
+---
+
+## Bug Fixes & Root Cause Analyses
+
+### Issue #1 — My listening streak keeps resetting
+
+- **1. How you reproduced it**:
+  Executed `pytest tests/test_streaks.py::test_streak_increments_on_sunday`. The test simulates a user listening on Saturday (`2024-06-15`, `weekday() == 5`) and then listening on Sunday (`2024-06-16`, `weekday() == 6`). The test failed with `AssertionError: assert 1 == 2`, observing that `user.listening_streak` remained `1` instead of incrementing to `2`.
+
+- **2. How you found the root cause**:
+  Inspected `services/streak_service.py` within the `update_listening_streak()` function (lines 42–80). Traced the conditional branches that compute `days_since_last = (today - last_date).days` and evaluate whether to increment the streak or reset it.
+
+- **3. The root cause**:
+  In `services/streak_service.py`, line 73:
+  ```python
+  elif days_since_last == 1 and today.weekday() != 6:
+      user.listening_streak += 1
+  else:
+      user.listening_streak = 1
+  ```
+  Python's `datetime.weekday()` standard designates Monday as `0` through Sunday as `6`. Line 73 explicitly included `and today.weekday() != 6`. Consequently, whenever `today` was Sunday (`weekday() == 6`), this branch evaluated to `False` even though `days_since_last == 1`. The flow dropped into the `else:` branch, resetting `user.listening_streak` back to `1`.
+
+- **4. Your fix**:
+  In `services/streak_service.py`, removed the invalid `and today.weekday() != 6` constraint from line 73. Consecutive day listening now consistently increments `user.listening_streak += 1` regardless of which day of the week it is, properly satisfying the domain rule that listening on consecutive calendar days increments streaks.
+
+- **5. Your side-effect check**:
+  - Verified same-day listening (`days_since_last == 0`) does not alter the streak.
+  - Verified skipped days (`days_since_last > 1`) still reset the streak to 1.
+  - Verified first-time listeners (`user.last_listened_at is None`) initialize streak to 1.
+  - Added regression test `test_streak_continues_through_full_weekend_into_monday` to `tests/test_streaks.py` to ensure a multi-day streak traversing Friday through Monday increments steadily from 1 to 4 without boundary interruptions.
+  - All 6 tests in `tests/test_streaks.py` passed.
+
