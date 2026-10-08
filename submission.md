@@ -153,3 +153,56 @@ To illustrate the interaction between routes, services, and models, consider the
   - Verified graceful handling for users with no friends (`[]`) and non-existent users (`ValueError`).
   - Added full test suite in `tests/test_feed.py` covering all scenarios (4 tests passing).
 
+### Issue #3 — The same song keeps showing up twice in search
+
+- **1. How you reproduced it**:
+  Executed `pytest tests/test_search.py::test_search_no_duplicates_multi_tag_song`. The test searches for `"Crown Heights"`, which matches the track `"Crown Heights Anthem"`. Because this track is linked to three separate tags (`"rap"`, `"hip-hop"`, `"boom bap"`), the search query returned three identical entries for the song. The test failed with `AssertionError: assert 3 == 1`.
+
+- **2. How you found the root cause**:
+  Inspected `services/search_service.py` in the `search_songs()` function (lines 27–42). Examined the SQLAlchemy 2.0 query construction:
+  ```python
+  select(Song)
+  .outerjoin(song_tags, Song.id == song_tags.c.song_id)
+  .filter(...)
+  ```
+  Analyzed how outer joining on a many-to-many association table (`song_tags`) affects result row counts when `.scalars().all()` is invoked without deduplication.
+
+- **3. The root cause**:
+  In `services/search_service.py`, lines 28–40:
+  ```python
+  results = (
+      db.session.execute(
+          select(Song)
+          .outerjoin(song_tags, Song.id == song_tags.c.song_id)
+          .filter(
+              db.or_(
+                  Song.title.ilike(f"%{query}%"),
+                  Song.artist.ilike(f"%{query}%"),
+              )
+          )
+      )
+      .scalars()
+      .all()
+  )
+  ```
+  The query explicitly joins `Song` with the `song_tags` association table without invoking `.distinct()`. In relational databases, joining a parent table (`song`) to a junction table (`song_tags`) produces a Cartesian row for every matching junction entry. If a song has $k$ tags, the SQL query generates $k$ result rows. When SQLAlchemy scalarizes and collects those rows into a list via `.scalars().all()`, the identical `Song` instance is returned $k$ times.
+
+- **4. Your fix**:
+  In `services/search_service.py`, appended `.distinct()` to the `select(Song)` query before executing:
+  ```python
+  select(Song)
+  .outerjoin(song_tags, Song.id == song_tags.c.song_id)
+  .filter(...)
+  .distinct()
+  ```
+  This instructs SQLAlchemy and SQLite to issue a `SELECT DISTINCT` statement, eliminating duplicate song entity occurrences in the scalar results.
+
+- **5. Your side-effect check**:
+  - Verified single-tag songs continue to return exactly 1 result (`test_search_no_duplicates_single_tag_song`).
+  - Verified songs without tags continue to return exactly 1 result (`test_search_no_duplicates_no_tag_song`).
+  - Verified multi-tag songs return exactly 1 result (`test_search_no_duplicates_multi_tag_song`).
+  - Verified unmatched queries return an empty list (`test_search_returns_empty_for_no_match`).
+  - Added regression test `test_search_all_results_have_unique_ids` in `tests/test_search.py` to assert that broader queries matching multiple multi-tag tracks yield result sets with 100% unique song IDs.
+  - All 6 tests in `tests/test_search.py` passed.
+
+

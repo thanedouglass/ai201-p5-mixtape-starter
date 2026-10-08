@@ -117,3 +117,16 @@ def test_search_returns_empty_for_no_match(app, seed_songs):
     with app.app_context():
         results = search_songs("zzz_no_match_zzz")
         assert results == []
+
+
+def test_search_all_results_have_unique_ids(app, seed_songs):
+    """
+    Search queries that match multiple multi-tag songs must return completely unique IDs without duplication.
+    """
+    with app.app_context():
+        # Both "Crown Heights Anthem" (3 tags) and other songs have distinct titles/artists
+        # Querying an empty or broad string or specific artist
+        results = search_songs("a")  # matches 'Midnight Drive', 'Block Party', 'Crown Heights Anthem'
+        result_ids = [r["id"] for r in results]
+        assert len(result_ids) == len(set(result_ids))
+
