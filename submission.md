@@ -205,4 +205,51 @@ To illustrate the interaction between routes, services, and models, consider the
   - Added regression test `test_search_all_results_have_unique_ids` in `tests/test_search.py` to assert that broader queries matching multiple multi-tag tracks yield result sets with 100% unique song IDs.
   - All 6 tests in `tests/test_search.py` passed.
 
+### Issue #4 — Notification missing when friend rates a song
+
+- **1. How you reproduced it**:
+  Created a test suite in `tests/test_notifications.py` (`test_rate_song_creates_notification_for_owner`). Seeded a user who shared a song and a second user who rated that song 5 stars via `rate_song(user_id=rater.id, song_id=song.id, score=5)`. Calling `get_notifications(sharer.id)` returned an empty list `[]`. The test failed with `AssertionError: assert 0 == 1`, demonstrating that no notification was issued to the song creator.
+
+- **2. How you found the root cause**:
+  Compared the notification dispatch architecture between `add_to_playlist()` (lines 35–71) and `rate_song()` (lines 73–111) in `services/notification_service.py`. While `add_to_playlist()` explicitly creates a notification whenever a friend adds someone's shared track, `rate_song()` had no notification generation call whatsoever.
+
+- **3. The root cause**:
+  In `services/notification_service.py`, `rate_song()`:
+  ```python
+  if existing:
+      existing.score = score
+      rating = existing
+  else:
+      rating = Rating(user_id=user_id, song_id=song_id, score=score)
+      db.session.add(rating)
+
+  db.session.commit()
+
+  return rating
+  ```
+  The function persisted the `Rating` entity to the database and committed the transaction, but omitted calling `create_notification()`. Furthermore, line 19 of `services/notification_service.py` explicitly documented `'song_rated'` as an expected notification type:
+  `notification_type: A short type string, e.g. 'song_added_to_playlist' or 'song_rated'.`
+  However, the dispatch logic was completely missing from `rate_song()`.
+
+- **4. Your fix**:
+  In `services/notification_service.py`, added the notification creation block following `db.session.commit()` in `rate_song()`:
+  ```python
+  # Notify the person who originally shared the song (if it wasn't them who rated it)
+  if song.shared_by != user_id:
+      create_notification(
+          user_id=song.shared_by,
+          notification_type="song_rated",
+          body=f"{rater.username} rated your song '{song.title}' {score} stars.",
+      )
+  ```
+  This creates a notification for the song owner (`song.shared_by`) with the rater's username, song title, and star score, matching the interaction pattern of `add_to_playlist()`.
+
+- **5. Your side-effect check**:
+  - Verified rating one's own shared song does not create a self-notification (`test_rate_own_song_does_not_create_notification`).
+  - Verified updating an existing rating properly sends an updated notification with the new rating score (`test_rating_update_by_friend_notifies_owner`).
+  - Verified invalid scores (< 1 or > 5) raise `ValueError` and abort before creating ratings or notifications (`test_invalid_score_raises_value_error`).
+  - Verified notification retrieval and marking read/unread status functions properly (`test_get_notifications_unread_filter_and_mark_as_read`).
+  - All 5 tests in `tests/test_notifications.py` passed.
+
+
 
