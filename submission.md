@@ -251,5 +251,31 @@ To illustrate the interaction between routes, services, and models, consider the
   - Verified notification retrieval and marking read/unread status functions properly (`test_get_notifications_unread_filter_and_mark_as_read`).
   - All 5 tests in `tests/test_notifications.py` passed.
 
+### Issue #5 — The last song in a playlist never shows up
 
+- **1. How you reproduced it**:
+  Executed `pytest tests/test_playlists.py::test_playlist_returns_all_songs`. A seeded playlist containing 5 tracks was queried via `get_playlist_songs(playlist_id)`. The function returned only 4 tracks (`Track 1` through `Track 4`), omitting `Track 5`. The test failed with `AssertionError: assert 4 == 5`. Similarly, `test_playlist_returns_songs_in_order` failed because `Track 5` was missing from the returned list.
 
+- **2. How you found the root cause**:
+  Inspected `services/playlist_service.py` inside `get_playlist_songs()` (lines 38–68). Examined the return expression after the SQLAlchemy query executed.
+
+- **3. The root cause**:
+  In `services/playlist_service.py`, line 66:
+  ```python
+  return [song.to_dict() for song in songs[:-1]]
+  ```
+  The slice `songs[:-1]` inadvertently excluded the final element from the list of retrieved songs. For any playlist with $N$ songs, this off-by-one truncation caused the function to return only the first $N - 1$ songs. If a playlist had exactly 1 song, it returned an empty list `[]`.
+
+- **4. Your fix**:
+  In `services/playlist_service.py`, removed the slice `[:-1]` from the list comprehension in `get_playlist_songs()`:
+  ```python
+  return [song.to_dict() for song in songs]
+  ```
+  The function now returns all songs associated with the playlist in their defined position order, fulfilling the contract documented in the function's docstring.
+
+- **5. Your side-effect check**:
+  - Verified playlists with 0 songs return an empty list without error (`test_empty_playlist_returns_empty_list`).
+  - Added boundary regression test `test_playlist_single_song_returns_song` verifying a playlist with exactly 1 song returns that 1 song rather than truncating to empty.
+  - Added test `test_playlist_not_found_raises_value_error` confirming invalid playlist IDs properly raise `ValueError`.
+  - Verified songs maintain ascending position ordering (`Track 1` through `Track 5`).
+  - All 5 tests in `tests/test_playlists.py` passed.

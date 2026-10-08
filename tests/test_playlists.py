@@ -84,3 +84,41 @@ def test_empty_playlist_returns_empty_list(app):
 
         songs = get_playlist_songs(playlist.id)
         assert songs == []
+
+
+def test_playlist_single_song_returns_song(app):
+    """A playlist with exactly one song should return that single song (boundary check for slice bug)."""
+    with app.app_context():
+        user = User(username="solodj", email="solodj@example.com")
+        db.session.add(user)
+        db.session.flush()
+
+        song = Song(title="Only Track", artist="Solo Artist", shared_by=user.id)
+        db.session.add(song)
+        db.session.flush()
+
+        playlist = Playlist(name="Single Track Playlist", created_by=user.id)
+        db.session.add(playlist)
+        db.session.flush()
+
+        db.session.execute(
+            playlist_entries.insert().values(
+                playlist_id=playlist.id,
+                song_id=song.id,
+                position=1,
+                added_by=user.id,
+            )
+        )
+        db.session.commit()
+
+        songs = get_playlist_songs(playlist.id)
+        assert len(songs) == 1
+        assert songs[0]["title"] == "Only Track"
+
+
+def test_playlist_not_found_raises_value_error(app):
+    """Querying a non-existent playlist ID raises ValueError."""
+    with app.app_context():
+        with pytest.raises(ValueError, match="Playlist non-existent-id not found"):
+            get_playlist_songs("non-existent-id")
+
