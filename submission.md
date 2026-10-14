@@ -279,3 +279,7 @@ To illustrate the interaction between routes, services, and models, consider the
   - Added test `test_playlist_not_found_raises_value_error` confirming invalid playlist IDs properly raise `ValueError`.
   - Verified songs maintain ascending position ordering (`Track 1` through `Track 5`).
   - All 5 tests in `tests/test_playlists.py` passed.
+
+## Commit History
+![Git log screenshot](src/assets/terminal.png)
+*five separate `fix:` commits, one per bug, are visible in the log above.*
