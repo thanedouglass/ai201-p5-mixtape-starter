@@ -281,5 +281,5 @@ To illustrate the interaction between routes, services, and models, consider the
   - All 5 tests in `tests/test_playlists.py` passed.
 
 ## Commit History
-![Git log screenshot](src/assets/terminal.png)
+![Git log screenshot](src/assets/terminal_log.jpg)
 *five separate `fix:` commits, one per bug, are visible in the log above.*
